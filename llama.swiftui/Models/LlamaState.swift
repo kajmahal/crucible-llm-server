@@ -229,44 +229,64 @@ class LlamaState: ObservableObject {
         }
     }
 
-    // Non-streaming completion for API use
-    func completeForAPI(messages: [LlamaChatInput], maxTokens: Int = 500) async -> String {
-        guard let llamaContext else {
-            return "Error: No model loaded"
-        }
-        guard let prompt = await llamaContext.formatChat(messages: messages, addAssistant: true) else {
-            return "Error: Model has no usable embedded chat template"
-        }
-
-        await llamaContext.completion_init(text: prompt)
-        var result = ""
-        var tokenCount = 0
-
-        while await !llamaContext.is_done && tokenCount < maxTokens {
-            let piece = await llamaContext.completion_loop()
-            result += piece
-            tokenCount += 1
-        }
-
-        await llamaContext.clear()
-
-        // Strip <think>...</think> blocks from Qwen-style reasoning models
+    private func cleanAPIOutput(_ result: String, trim: Bool) -> String {
         var cleaned = result
         if let thinkStart = cleaned.range(of: "<think>") {
-            if let thinkEnd = cleaned.range(of: "</think>") {
-                // Full think block — take everything after it
+            if let thinkEnd = cleaned.range(of: "</think>", range: thinkStart.upperBound..<cleaned.endIndex) {
                 cleaned = String(cleaned[thinkEnd.upperBound...])
             } else {
-                // Think block consumed all tokens — take everything before it
                 cleaned = String(cleaned[..<thinkStart.lowerBound])
             }
         }
-
-        // Stop at first <|im_end|> — model may echo the prompt in a loop
         if let endTag = cleaned.range(of: "<|im_end|>") {
             cleaned = String(cleaned[..<endTag.lowerBound])
         }
+        return trim ? cleaned.trimmingCharacters(in: .whitespacesAndNewlines) : cleaned
+    }
 
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Non-streaming completion for API use
+    func completeForAPI(messages: [LlamaChatInput], maxTokens: Int = 2048) async -> String {
+        guard let llamaContext else { return "Error: No model loaded" }
+        guard let prompt = await llamaContext.formatChat(messages: messages, addAssistant: true) else {
+            return "Error: Model has no usable embedded chat template"
+        }
+        await llamaContext.completion_init(text: prompt)
+        var result = ""
+        var tokenCount = 0
+        while await !llamaContext.is_done && tokenCount < maxTokens {
+            result += await llamaContext.completion_loop()
+            tokenCount += 1
+        }
+        await llamaContext.clear()
+        return cleanAPIOutput(result, trim: true)
+    }
+
+    // Streaming completion for OpenAI-compatible SSE clients
+    func completeForAPIStreaming(messages: [LlamaChatInput], maxTokens: Int = 2048,
+                                 onChunk: @escaping (String) -> Void) async -> String {
+        guard let llamaContext else { return "Error: No model loaded" }
+        guard let prompt = await llamaContext.formatChat(messages: messages, addAssistant: true) else {
+            return "Error: Model has no usable embedded chat template"
+        }
+        await llamaContext.completion_init(text: prompt)
+        var raw = ""
+        var emitted = ""
+        var tokenCount = 0
+        while await !llamaContext.is_done && tokenCount < maxTokens {
+            raw += await llamaContext.completion_loop()
+            let cleaned = cleanAPIOutput(raw, trim: false)
+            if cleaned.hasPrefix(emitted) && cleaned.count > emitted.count {
+                let delta = String(cleaned.dropFirst(emitted.count))
+                if !delta.isEmpty { onChunk(delta); emitted = cleaned }
+            }
+            tokenCount += 1
+        }
+        await llamaContext.clear()
+        let final = cleanAPIOutput(raw, trim: false)
+        if final.hasPrefix(emitted) && final.count > emitted.count {
+            let delta = String(final.dropFirst(emitted.count))
+            if !delta.isEmpty { onChunk(delta); emitted = final }
+        }
+        return final.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

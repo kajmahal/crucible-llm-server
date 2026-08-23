@@ -38,7 +38,7 @@ actor LlamaContext {
     /// This variable is used to store temporarily invalid cchars
     private var temporary_invalid_cchars: [CChar]
 
-    var n_len: Int32 = 4096
+    var n_len: Int32 = 8192
     var n_cur: Int32 = 0
 
     var n_decode: Int32 = 0
@@ -49,7 +49,8 @@ actor LlamaContext {
         self.tokens_list = []
         self.batch = llama_batch_init(512, 0, 1)
         self.temporary_invalid_cchars = []
-        let sparams = llama_sampler_chain_default_params()
+        var sparams = llama_sampler_chain_default_params()
+        sparams.no_perf = true
         self.sampling = llama_sampler_chain_init(sparams)
         llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
         llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
@@ -85,7 +86,7 @@ actor LlamaContext {
         print("Using \(n_threads) threads")
 
         var ctx_params = llama_context_default_params()
-        ctx_params.n_ctx = 4096
+        ctx_params.n_ctx = 8192
         ctx_params.n_batch = 512
         ctx_params.n_ubatch = 256
         ctx_params.n_threads = 4
@@ -94,6 +95,8 @@ actor LlamaContext {
         ctx_params.type_k = GGML_TYPE_Q8_0
         ctx_params.type_v = GGML_TYPE_Q8_0
         ctx_params.offload_kqv = true
+        ctx_params.op_offload = true
+        ctx_params.no_perf = true
 
         let context = llama_init_from_model(model, ctx_params)
         guard let context else {
@@ -191,23 +194,19 @@ actor LlamaContext {
             print("error: n_kv_req > n_ctx, the required KV cache size is not big enough")
         }
 
-        for id in tokens_list {
-            print(String(cString: token_to_piece(token: id) + [0]))
+        let promptBatchSize = 512
+        var chunkStart = 0
+        while chunkStart < tokens_list.count {
+            llama_batch_clear(&batch)
+            let chunkEnd = min(chunkStart + promptBatchSize, tokens_list.count)
+            for i in chunkStart..<chunkEnd {
+                let needsLogits = i == tokens_list.count - 1
+                llama_batch_add(&batch, tokens_list[i], Int32(i), [0], needsLogits)
+            }
+            if llama_decode(context, batch) != 0 { print("llama_decode() failed") }
+            chunkStart = chunkEnd
         }
-
-        llama_batch_clear(&batch)
-
-        for i1 in 0..<tokens_list.count {
-            let i = Int(i1)
-            llama_batch_add(&batch, tokens_list[i], Int32(i), [0], false)
-        }
-        batch.logits[Int(batch.n_tokens) - 1] = 1 // true
-
-        if llama_decode(context, batch) != 0 {
-            print("llama_decode() failed")
-        }
-
-        n_cur = batch.n_tokens
+        n_cur = Int32(tokens_list.count)
     }
 
     func completion_loop() -> String {
@@ -237,7 +236,6 @@ actor LlamaContext {
         } else {
             new_token_str = ""
         }
-        print(new_token_str)
         // tokens_list.append(new_token_id)
 
         llama_batch_clear(&batch)

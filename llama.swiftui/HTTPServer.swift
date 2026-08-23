@@ -143,13 +143,25 @@ class HTTPServer {
             return
         }
 
-        let maxTokens = json["max_tokens"] as? Int ?? 500
+        let maxTokens = json["max_tokens"] as? Int ?? 2048
+        let stream = json["stream"] as? Bool ?? false
 
         // Run inference on a background thread
         Task {
             guard let llamaState = await self.llamaState else {
                 self.sendResponse(connection: connection, status: "500 Internal Server Error",
                                   body: "{\"error\":\"No model loaded\"}", contentType: "application/json")
+                return
+            }
+
+            if stream {
+                let streamID = "chatcmpl-\(UUID().uuidString.prefix(8))"
+                self.sendStreamingHeaders(connection: connection)
+                self.sendStreamChunk(connection: connection, id: streamID, role: "assistant")
+                _ = await llamaState.completeForAPIStreaming(messages: chatMessages, maxTokens: maxTokens) { chunk in
+                    self.sendStreamChunk(connection: connection, id: streamID, content: chunk)
+                }
+                self.finishStream(connection: connection, id: streamID)
                 return
             }
 
@@ -180,6 +192,42 @@ class HTTPServer {
         }
     }
 
+    private func sendStreamingHeaders(connection: NWConnection) {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        connection.send(content: headers.data(using: .utf8), completion: .contentProcessed { _ in })
+    }
+
+    private func streamChunkJSON(id: String, role: String? = nil, content: String? = nil,
+                                 finishReason: String? = nil) -> String? {
+        var delta: [String: Any] = [:]
+        if let role = role { delta["role"] = role }
+        if let content = content { delta["content"] = content }
+        var choice: [String: Any] = ["index": 0, "delta": delta]
+        if let finishReason = finishReason { choice["finish_reason"] = finishReason }
+        else { choice["finish_reason"] = NSNull() }
+        let payload: [String: Any] = [
+            "id": id, "object": "chat.completion.chunk",
+            "created": Int(Date().timeIntervalSince1970), "model": "local",
+            "choices": [choice]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    private func sendStreamChunk(connection: NWConnection, id: String, role: String? = nil,
+                                 content: String? = nil, finishReason: String? = nil) {
+        guard let json = streamChunkJSON(id: id, role: role, content: content, finishReason: finishReason),
+              let data = "data: \(json)\n\n".data(using: .utf8) else { return }
+        connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func finishStream(connection: NWConnection, id: String) {
+        guard let json = streamChunkJSON(id: id, finishReason: "stop"),
+              let data = "data: \(json)\n\ndata: [DONE]\n\n".data(using: .utf8) else {
+            connection.cancel()
+            return
+        }
+        connection.send(content: data, completion: .contentProcessed { _ in connection.cancel() })
+    }
     private func sendResponse(connection: NWConnection, status: String, body: String,
                               contentType: String = "text/plain", extraHeaders: [String] = []) {
         var headers = "HTTP/1.1 \(status)\r\n"
