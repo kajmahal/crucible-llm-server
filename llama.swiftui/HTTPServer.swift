@@ -57,16 +57,47 @@ class HTTPServer {
 
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
-            guard let self = self, let data = data, error == nil else {
+        receiveCompleteRequest(connection, accumulatedData: Data())
+    }
+
+    private func receiveCompleteRequest(_ connection: NWConnection, accumulatedData: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self, error == nil else {
                 connection.cancel()
                 return
             }
-            let request = String(data: data, encoding: .utf8) ?? ""
+
+            var buffer = accumulatedData
+            if let data = data { buffer.append(data) }
+            let delimiter = Data("\r\n\r\n".utf8)
+            guard let headerRange = buffer.range(of: delimiter) else {
+                if isComplete { connection.cancel() }
+                else { self.receiveCompleteRequest(connection, accumulatedData: buffer) }
+                return
+            }
+
+            let headerEnd = headerRange.upperBound
+            let headerText = String(data: buffer.prefix(headerRange.lowerBound), encoding: .utf8) ?? ""
+            let expectedBodyLength = headerText.components(separatedBy: "\r\n").compactMap { line -> Int? in
+                guard line.lowercased().hasPrefix("content-length:") else { return nil }
+                return Int(line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? "")
+            }.first ?? 0
+            let expectedLength = headerEnd + expectedBodyLength
+
+            guard buffer.count >= expectedLength else {
+                if isComplete { connection.cancel() }
+                else { self.receiveCompleteRequest(connection, accumulatedData: buffer) }
+                return
+            }
+
+            let requestData = buffer.prefix(expectedLength)
+            guard let request = String(data: requestData, encoding: .utf8) else {
+                connection.cancel()
+                return
+            }
             self.routeRequest(request, connection: connection)
         }
     }
-
     private func routeRequest(_ request: String, connection: NWConnection) {
         let lines = request.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else {
@@ -117,7 +148,7 @@ class HTTPServer {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
         let payload: [String: Any] = ["app": "CrucibleLLM", "version": version, "build": build,
                                       "commit": commit, "context": 8192, "streaming": true,
-                                      "runtime": "8k-metal-sse"]
+                                      "runtime": "8k-metal-sse-http-framing"]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let response = String(data: data, encoding: .utf8) else { return }
         sendResponse(connection: connection, status: "200 OK", body: response, contentType: "application/json")

@@ -7,9 +7,9 @@ $checks = @(
     @{ Name='git fingerprint'; Ok=$http.Contains('CrucibleGitCommit') },
     @{ Name='8k fingerprint'; Ok=$http.Contains('"context": 8192') },
     @{ Name='streaming fingerprint'; Ok=$http.Contains('"streaming": true') },
-    @{ Name='runtime fingerprint'; Ok=$http.Contains('"runtime": "8k-metal-sse"') },
-    @{ Name='build number 2'; Ok=([regex]::Matches($proj,'CURRENT_PROJECT_VERSION = 2;').Count -eq 2) },
-    @{ Name='marketing 1.1'; Ok=([regex]::Matches($proj,'MARKETING_VERSION = 1.1;').Count -eq 2) },
+    @{ Name='runtime fingerprint'; Ok=$http.Contains('"runtime": "8k-metal-sse-http-framing"') },
+    @{ Name='build number 3'; Ok=([regex]::Matches($proj,'CURRENT_PROJECT_VERSION = 3;').Count -eq 2) },
+    @{ Name='marketing 1.2'; Ok=([regex]::Matches($proj,'MARKETING_VERSION = 1.2;').Count -eq 2) },
     @{ Name='Git SHA injected'; Ok=$workflow.Contains('INFOPLIST_KEY_CrucibleGitCommit="$GITHUB_SHA"') }
 )
 $missing = @($checks | Where-Object { -not $_.Ok } | ForEach-Object { $_.Name })
