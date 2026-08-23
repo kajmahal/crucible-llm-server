@@ -38,7 +38,7 @@ actor LlamaContext {
     /// This variable is used to store temporarily invalid cchars
     private var temporary_invalid_cchars: [CChar]
 
-    var n_len: Int32 = 1024
+    var n_len: Int32 = 4096
     var n_cur: Int32 = 0
 
     var n_decode: Int32 = 0
@@ -67,6 +67,9 @@ actor LlamaContext {
     static func create_context(path: String) throws -> LlamaContext {
         llama_backend_init()
         var model_params = llama_model_default_params()
+        model_params.n_gpu_layers = -1
+        model_params.use_mmap = true
+        model_params.use_mlock = false
 
 #if targetEnvironment(simulator)
         model_params.n_gpu_layers = 0
@@ -78,13 +81,19 @@ actor LlamaContext {
             throw LlamaError.couldNotInitializeContext
         }
 
-        let n_threads = max(1, min(8, ProcessInfo.processInfo.processorCount - 2))
+        let n_threads = 4
         print("Using \(n_threads) threads")
 
         var ctx_params = llama_context_default_params()
-        ctx_params.n_ctx = 1024  // reduced from 2048 to lower KV cache memory on iPad
-        ctx_params.n_threads       = Int32(n_threads)
-        ctx_params.n_threads_batch = Int32(n_threads)
+        ctx_params.n_ctx = 4096
+        ctx_params.n_batch = 512
+        ctx_params.n_ubatch = 256
+        ctx_params.n_threads = 4
+        ctx_params.n_threads_batch = 4
+        ctx_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED
+        ctx_params.type_k = GGML_TYPE_Q8_0
+        ctx_params.type_v = GGML_TYPE_Q8_0
+        ctx_params.offload_kqv = true
 
         let context = llama_init_from_model(model, ctx_params)
         guard let context else {
