@@ -5,6 +5,11 @@ enum LlamaError: Error {
     case couldNotInitializeContext
 }
 
+struct LlamaChatInput: Sendable {
+    let role: String
+    let content: String
+}
+
 func llama_batch_clear(_ batch: inout llama_batch) {
     batch.n_tokens = 0
 }
@@ -112,6 +117,53 @@ actor LlamaContext {
 
     func get_n_tokens() -> Int32 {
         return batch.n_tokens;
+    }
+
+    func formatChat(messages: [LlamaChatInput], addAssistant: Bool = true) -> String? {
+        guard let template = llama_model_chat_template(model, nil) else {
+            print("Model has no embedded chat template")
+            return nil
+        }
+
+        var allocated: [UnsafeMutablePointer<CChar>] = []
+        var chat: [llama_chat_message] = []
+        defer { allocated.forEach { free($0) } }
+
+        for message in messages {
+            guard let role = strdup(message.role), let content = strdup(message.content) else {
+                return nil
+            }
+            allocated.append(role)
+            allocated.append(content)
+            chat.append(llama_chat_message(role: role, content: content))
+        }
+
+        var capacity = max(1024, messages.reduce(0) { $0 + $1.role.utf8.count + $1.content.utf8.count + 64 } * 2)
+        while true {
+            var output = [CChar](repeating: 0, count: capacity)
+            let required = chat.withUnsafeBufferPointer { chatBuffer in
+                output.withUnsafeMutableBufferPointer { outputBuffer in
+                    llama_chat_apply_template(
+                        template,
+                        chatBuffer.baseAddress,
+                        chatBuffer.count,
+                        addAssistant,
+                        outputBuffer.baseAddress,
+                        Int32(outputBuffer.count)
+                    )
+                }
+            }
+
+            guard required >= 0 else {
+                print("Failed to apply embedded chat template")
+                return nil
+            }
+            if Int(required) < capacity {
+                let bytes = output.prefix(Int(required)).map { UInt8(bitPattern: $0) }
+                return String(decoding: bytes, as: UTF8.self)
+            }
+            capacity = Int(required) + 1
+        }
     }
 
     func completion_init(text: String) {
@@ -300,7 +352,7 @@ actor LlamaContext {
         let utf8Count = text.utf8.count
         let n_tokens = utf8Count + (add_bos ? 1 : 0) + 1
         let tokens = UnsafeMutablePointer<llama_token>.allocate(capacity: n_tokens)
-        let tokenCount = llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, false)
+        let tokenCount = llama_tokenize(vocab, text, Int32(utf8Count), tokens, Int32(n_tokens), add_bos, true)
 
         var swiftTokens: [llama_token] = []
         for i in 0..<tokenCount {

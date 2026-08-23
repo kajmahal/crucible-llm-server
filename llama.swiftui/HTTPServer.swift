@@ -131,19 +131,17 @@ class HTTPServer {
             return
         }
 
-        // Build prompt using ChatML format (works with Qwen, Gemma, most chat models)
-        // Inject /no_think by default unless the caller explicitly includes a system message
-        var prompt = ""
-        let hasSystemMessage = messages.contains { ($0["role"] as? String) == "system" }
-        if !hasSystemMessage {
-            prompt += "<|im_start|>system\n/no_think\nBe concise and helpful.<|im_end|>\n"
+        // Preserve OpenAI roles/content and let llama.cpp apply the chat template embedded in the GGUF.
+        let chatMessages: [LlamaChatInput] = messages.compactMap { msg in
+            guard let role = msg["role"] as? String,
+                  let content = msg["content"] as? String else { return nil }
+            return LlamaChatInput(role: role, content: content)
         }
-        for msg in messages {
-            let role = msg["role"] as? String ?? "user"
-            let content = msg["content"] as? String ?? ""
-            prompt += "<|im_start|>\(role)\n\(content)<|im_end|>\n"
+        guard !chatMessages.isEmpty else {
+            sendResponse(connection: connection, status: "400 Bad Request",
+                         body: "{\"error\":\"No valid messages\"}", contentType: "application/json")
+            return
         }
-        prompt += "<|im_start|>assistant\n"
 
         let maxTokens = json["max_tokens"] as? Int ?? 500
 
@@ -155,7 +153,7 @@ class HTTPServer {
                 return
             }
 
-            let result = await llamaState.completeForAPI(text: prompt, maxTokens: maxTokens)
+            let result = await llamaState.completeForAPI(messages: chatMessages, maxTokens: maxTokens)
 
             let responseJSON: [String: Any] = [
                 "id": "chatcmpl-\(UUID().uuidString.prefix(8))",

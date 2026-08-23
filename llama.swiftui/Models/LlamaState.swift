@@ -230,12 +230,15 @@ class LlamaState: ObservableObject {
     }
 
     // Non-streaming completion for API use
-    func completeForAPI(text: String, maxTokens: Int = 500) async -> String {
+    func completeForAPI(messages: [LlamaChatInput], maxTokens: Int = 500) async -> String {
         guard let llamaContext else {
             return "Error: No model loaded"
         }
+        guard let prompt = await llamaContext.formatChat(messages: messages, addAssistant: true) else {
+            return "Error: Model has no usable embedded chat template"
+        }
 
-        await llamaContext.completion_init(text: text)
+        await llamaContext.completion_init(text: prompt)
         var result = ""
         var tokenCount = 0
 
