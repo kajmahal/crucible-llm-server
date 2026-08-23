@@ -96,6 +96,8 @@ class HTTPServer {
         switch path {
         case "/":
             sendResponse(connection: connection, status: "200 OK", body: "Crucible LLM Server is running")
+        case "/version":
+            handleVersion(connection: connection)
         case "/v1/models", "/api/tags":
             handleModels(connection: connection)
         case "/v1/chat/completions":
@@ -109,6 +111,17 @@ class HTTPServer {
         }
     }
 
+    private func handleVersion(connection: NWConnection) {
+        let commit = Bundle.main.object(forInfoDictionaryKey: "CrucibleGitCommit") as? String ?? "unknown"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        let payload: [String: Any] = ["app": "CrucibleLLM", "version": version, "build": build,
+                                      "commit": commit, "context": 8192, "streaming": true,
+                                      "runtime": "8k-metal-sse"]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let response = String(data: data, encoding: .utf8) else { return }
+        sendResponse(connection: connection, status: "200 OK", body: response, contentType: "application/json")
+    }
     private func handleModels(connection: NWConnection) {
         let response = """
         {"object":"list","data":[{"id":"local","object":"model","created":0,"owned_by":"local"}]}

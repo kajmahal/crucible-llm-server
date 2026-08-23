@@ -41,6 +41,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM="" \
+            INFOPLIST_KEY_CrucibleGitCommit="$GITHUB_SHA" \
             -derivedDataPath build
 
       - name: Package IPA
